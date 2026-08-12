@@ -227,6 +227,73 @@
                 @endif
             </div>
 
+            <!-- Device Logs Section -->
+            <div class="bg-white rounded-lg shadow p-6">
+                <div class="flex justify-between items-center mb-4">
+                    <h2 class="text-xl font-semibold text-gray-900">Device Communication Logs</h2>
+                    <div class="text-sm text-gray-600">
+                        Total: {{ $logStats['total_logs'] ?? 0 }} |
+                        Handshakes: {{ $logStats['handshakes'] ?? 0 }} |
+                        Attendance: {{ $logStats['attendance_logs'] ?? 0 }} |
+                        Commands: {{ $logStats['command_sent'] ?? 0 }}
+                    </div>
+                </div>
+
+                @if(isset($recentLogs) && $recentLogs->count() > 0)
+                    <div class="space-y-2 max-h-96 overflow-y-auto">
+                        @foreach($recentLogs as $log)
+                            <div class="border rounded-lg p-3 @if($log->log_type === 'error') border-red-200 bg-red-50 @elseif($log->log_type === 'handshake') border-green-200 bg-green-50 @elseif($log->log_type === 'attendance') border-blue-200 bg-blue-50 @endif">
+                                <div class="flex justify-between items-center">
+                                    <div class="flex-1">
+                                        <div class="flex items-center gap-2">
+                                            <span class="font-medium">{{ $log->message }}</span>
+                                            <span class="text-xs px-2 py-1 rounded @if($log->log_type === 'error') bg-red-100 text-red-800 @elseif($log->log_type === 'handshake') bg-green-100 text-green-800 @elseif($log->log_type === 'attendance') bg-blue-100 text-blue-800 @else bg-gray-100 text-gray-800 @endif">
+                                                {{ ucfirst($log->log_type) }}
+                                            </span>
+                                        </div>
+                                        <div class="text-sm text-gray-600 mt-1">
+                                            @if($log->device_serial)
+                                                <span class="font-medium">Device:</span> {{ $log->device_serial }}
+                                            @endif
+                                            @if($log->device_ip)
+                                                <span class="font-medium ml-2">IP:</span> {{ $log->device_ip }}
+                                            @endif
+                                            @if($log->endpoint)
+                                                <span class="font-medium ml-2">Endpoint:</span> {{ $log->endpoint }}
+                                            @endif
+                                        </div>
+                                        @if($log->log_data)
+                                            <div class="text-xs text-gray-500 mt-1">
+                                                @php
+                                                    $data = is_string($log->log_data) ? json_decode($log->log_data, true) : $log->log_data;
+                                                @endphp
+                                                @if($data)
+                                                    @foreach($data as $key => $value)
+                                                        @if(is_string($value) && strlen($value) < 50)
+                                                            {{ $key }}: {{ $value }}
+                                                        @endif
+                                                    @endforeach
+                                                @endif
+                                            </div>
+                                        @endif
+                                    </div>
+                                    <div class="text-right ml-4">
+                                        <div class="text-xs text-gray-500">
+                                            {{ \Carbon\Carbon::parse($log->created_at)->format('H:i:s') }}
+                                        </div>
+                                        <div class="text-xs text-gray-400">
+                                            {{ \Carbon\Carbon::parse($log->created_at)->diffForHumans() }}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        @endforeach
+                    </div>
+                @else
+                    <p class="text-gray-500">No device communication logs yet.</p>
+                @endif
+            </div>
+
             <!-- Recent Attendance Section -->
             <div class="bg-white rounded-lg shadow p-6">
                 <h2 class="text-xl font-semibold text-gray-900 mb-4">Recent Attendance Records</h2>

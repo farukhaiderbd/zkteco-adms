@@ -6,6 +6,7 @@ use App\Models\BiometricAttendance;
 use App\Models\BiometricCommand;
 use App\Models\BiometricDevice;
 use App\Models\BiometricEmployee;
+use App\Services\ZKTecoDeviceLogger;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
 
@@ -24,11 +25,28 @@ class ZKTecoController extends Controller
             ->get();
         $pendingCommands = BiometricCommand::pending()->get();
 
+        // Get recent device logs
+        $recentLogs = \DB::table('zkteco_device_logs')
+            ->orderBy('created_at', 'desc')
+            ->take(50)
+            ->get();
+
+        // Get log statistics
+        $logStats = [
+            'total_logs' => \DB::table('zkteco_device_logs')->count(),
+            'handshakes' => \DB::table('zkteco_device_logs')->where('log_type', 'handshake')->count(),
+            'attendance_logs' => \DB::table('zkteco_device_logs')->where('log_type', 'attendance')->count(),
+            'command_sent' => \DB::table('zkteco_device_logs')->where('log_type', 'command_sent')->count(),
+            'errors' => \DB::table('zkteco_device_logs')->where('log_type', 'error')->count(),
+        ];
+
         return view('zkteco.dashboard', compact(
             'devices',
             'employees',
             'recentAttendances',
-            'pendingCommands'
+            'pendingCommands',
+            'recentLogs',
+            'logStats'
         ));
     }
 
@@ -114,8 +132,14 @@ class ZKTecoController extends Controller
     public function deviceHandshake(Request $request)
     {
         $serialNumber = $request->query('SN');
+        $deviceIp = $request->ip();
+
+        $logger = ZKTecoDeviceLogger::forRequest($serialNumber, $deviceIp)
+            ->setEndpoint('/iclock/cdata');
 
         if (! $serialNumber) {
+            $logger->logError('Missing serial number in handshake');
+
             return response('Missing serial number', 400);
         }
 
@@ -125,6 +149,16 @@ class ZKTecoController extends Controller
             $device->update([
                 'status' => 'online',
                 'last_online' => now(),
+            ]);
+
+            $logger->logHandshake([
+                'device_name' => $device->device_name,
+                'previous_status' => $device->getOriginal('status'),
+                'user_agent' => $request->userAgent(),
+            ]);
+        } else {
+            $logger->logError('Device not found', [
+                'requested_serial' => $serialNumber,
             ]);
         }
 
@@ -137,10 +171,17 @@ class ZKTecoController extends Controller
     public function receiveAttendance(Request $request)
     {
         $data = $request->getContent();
+        $serialNumber = $request->header('SN');
+        $deviceIp = $request->ip();
+
+        $logger = ZKTecoDeviceLogger::forRequest($serialNumber, $deviceIp)
+            ->setEndpoint('/iclock/cdata');
 
         // Parse attendance data from ZKTeco format
         // Format: USER_ID\tTIMESTAMP\tVERIFICATION_TYPE\t...
         $lines = explode("\n", $data);
+        $attendanceCount = 0;
+        $processedEmployees = [];
 
         foreach ($lines as $line) {
             if (empty($line)) {
@@ -156,7 +197,7 @@ class ZKTecoController extends Controller
             $timestamp = $parts[1];
             $verificationType = $parts[2] ?? 0;
 
-            $device = BiometricDevice::where('serial_number', $request->header('SN'))->first();
+            $device = BiometricDevice::where('serial_number', $serialNumber)->first();
 
             if ($device) {
                 // Update device status
@@ -175,8 +216,17 @@ class ZKTecoController extends Controller
                     'created_at' => now(),
                     'updated_at' => now(),
                 ]);
+
+                $attendanceCount++;
+                $processedEmployees[] = $userId;
             }
         }
+
+        $logger->logAttendanceData($attendanceCount, [
+            'employees_processed' => $processedEmployees,
+            'data_size' => strlen($data),
+            'line_count' => count($lines),
+        ]);
 
         return response('OK');
     }
@@ -187,8 +237,14 @@ class ZKTecoController extends Controller
     public function getCommands(Request $request)
     {
         $serialNumber = $request->query('SN');
+        $deviceIp = $request->ip();
+
+        $logger = ZKTecoDeviceLogger::forRequest($serialNumber, $deviceIp)
+            ->setEndpoint('/iclock/getrequest');
 
         if (! $serialNumber) {
+            $logger->logError('Missing serial number in getrequest');
+
             return response('');
         }
 
@@ -198,11 +254,27 @@ class ZKTecoController extends Controller
             ->get();
 
         $response = '';
+        $sentCommands = [];
 
         foreach ($commands as $command) {
             $response .= $command->command;
-            $command->markAsSent();
+            $command->update(['status' => 'sent', 'sent_at' => now()]);
+            $sentCommands[] = [
+                'command_id' => $command->command_id,
+                'type' => $command->type,
+                'employee_id' => $command->employee_id,
+            ];
+
+            $logger->logCommandSent($command->command_id, $command->type, [
+                'employee_id' => $command->employee_id,
+                'command' => substr($command->command, 0, 100).'...',
+            ]);
         }
+
+        $logger->log('info', "Command polling completed - {$commands->count()} commands sent", [
+            'commands_sent' => count($sentCommands),
+            'response_size' => strlen($response),
+        ]);
 
         return response($response);
     }
@@ -213,10 +285,16 @@ class ZKTecoController extends Controller
     public function receiveCommandResult(Request $request)
     {
         $data = $request->getContent();
+        $serialNumber = $request->get('SN');
+        $deviceIp = $request->ip();
+
+        $logger = ZKTecoDeviceLogger::forRequest($serialNumber, $deviceIp)
+            ->setEndpoint('/iclock/devicecmd');
 
         // Parse command result format
         // Format: COMMAND_ID\tRESULT\t...
         $lines = explode("\n", $data);
+        $processedResults = [];
 
         foreach ($lines as $line) {
             if (empty($line)) {
@@ -231,20 +309,36 @@ class ZKTecoController extends Controller
 
             if ($command) {
                 if ($result === 'OK') {
-                    $command->markAsCompleted($result);
+                    $command->update([
+                        'status' => 'executed',
+                        'executed_at' => now(),
+                    ]);
 
-                    // Update employee sync status
-                    if ($command->biometricEmployee && $command->command_type === 'CREATEUSER') {
-                        $command->biometricEmployee->update([
-                            'synced_to_device' => true,
-                            'last_sync' => now(),
-                        ]);
-                    }
+                    $logger->logCommandResult($commandId, 'SUCCESS', [
+                        'command_type' => $command->type,
+                        'employee_id' => $command->employee_id,
+                    ]);
+
+                    $processedResults[] = ['command_id' => $commandId, 'result' => 'SUCCESS'];
                 } else {
-                    $command->markAsFailed($result);
+                    $command->update([
+                        'status' => 'failed',
+                        'failed_at' => now(),
+                    ]);
+
+                    $logger->logCommandResult($commandId, 'FAILED', [
+                        'command_type' => $command->type,
+                        'error' => $result,
+                    ]);
+
+                    $processedResults[] = ['command_id' => $commandId, 'result' => 'FAILED', 'error' => $result];
                 }
             }
         }
+
+        $logger->log('info', 'Command results processed - '.count($processedResults).' commands', [
+            'results' => $processedResults,
+        ]);
 
         return response('OK');
     }
