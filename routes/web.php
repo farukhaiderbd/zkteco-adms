@@ -14,6 +14,11 @@ Route::prefix('zkteco')->group(function () {
     Route::post('/employee', [ZKTecoController::class, 'storeEmployee'])->name('zkteco.store.employee');
     Route::post('/command/user', [ZKTecoController::class, 'createUserCommand'])->name('zkteco.command.user');
     Route::post('/test/connection', [ZKTecoController::class, 'testConnection'])->name('zkteco.test.connection');
+
+    // Monitoring endpoints
+    Route::get('/command/{commandId}/status', [ZKTecoController::class, 'checkCommandStatus'])->name('zkteco.command.status');
+    Route::get('/device/{deviceSerial}/pending', [ZKTecoController::class, 'getPendingCommands'])->name('zkteco.device.pending');
+    Route::get('/device/{deviceSerial}/history', [ZKTecoController::class, 'getDeviceCommandHistory'])->name('zkteco.device.history');
 });
 
 // ZKTeco Device Communication Endpoints (as per package specification)

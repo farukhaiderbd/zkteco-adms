@@ -291,53 +291,45 @@ class ZKTecoController extends Controller
         $logger = ZKTecoDeviceLogger::forRequest($serialNumber, $deviceIp)
             ->setEndpoint('/iclock/devicecmd');
 
-        // Parse command result format
-        // Format: COMMAND_ID\tRESULT\t...
-        $lines = explode("\n", $data);
-        $processedResults = [];
+        // ZKTeco devices send results in format: CMD=XXX&ID=XXX&Return=XXX
+        parse_str($data, $parsed);
 
-        foreach ($lines as $line) {
-            if (empty($line)) {
-                continue;
-            }
+        $commandId = $parsed['ID'] ?? '';
+        $returnCode = $parsed['Return'] ?? '';
+        $command = $parsed['CMD'] ?? '';
 
-            $parts = explode("\t", $line);
-            $commandId = $parts[0] ?? '';
-            $result = $parts[1] ?? 'OK';
+        if ($commandId) {
+            $dbCommand = BiometricCommand::where('command_id', $commandId)->first();
 
-            $command = BiometricCommand::where('command_id', $commandId)->first();
-
-            if ($command) {
-                if ($result === 'OK') {
-                    $command->update([
+            if ($dbCommand) {
+                if ($returnCode === '0' || $returnCode === 'OK') {
+                    $dbCommand->update([
                         'status' => 'executed',
                         'executed_at' => now(),
                     ]);
 
                     $logger->logCommandResult($commandId, 'SUCCESS', [
-                        'command_type' => $command->type,
-                        'employee_id' => $command->employee_id,
+                        'command_type' => $dbCommand->type,
+                        'employee_id' => $dbCommand->employee_id,
                     ]);
-
-                    $processedResults[] = ['command_id' => $commandId, 'result' => 'SUCCESS'];
                 } else {
-                    $command->update([
+                    $dbCommand->update([
                         'status' => 'failed',
                         'failed_at' => now(),
                     ]);
 
                     $logger->logCommandResult($commandId, 'FAILED', [
-                        'command_type' => $command->type,
-                        'error' => $result,
+                        'command_type' => $dbCommand->type,
+                        'error_code' => $returnCode,
                     ]);
-
-                    $processedResults[] = ['command_id' => $commandId, 'result' => 'FAILED', 'error' => $result];
                 }
             }
         }
 
-        $logger->log('info', 'Command results processed - '.count($processedResults).' commands', [
-            'results' => $processedResults,
+        $logger->log('info', 'Command results processed', [
+            'command_id' => $commandId,
+            'return_code' => $returnCode,
+            'command' => $command,
         ]);
 
         return response('OK');
@@ -367,5 +359,80 @@ class ZKTecoController extends Controller
 
             return redirect()->back()->with('error', "Cannot connect to device: {$errstr}");
         }
+    }
+
+    /**
+     * Check command execution status
+     */
+    public function checkCommandStatus($commandId)
+    {
+        $command = BiometricCommand::where('command_id', $commandId)->first();
+
+        if (! $command) {
+            return response()->json(['error' => 'Command not found'], 404);
+        }
+
+        return response()->json([
+            'command_id' => $command->command_id,
+            'type' => $command->type,
+            'status' => $command->status,
+            'employee_id' => $command->employee_id,
+            'sent_at' => $command->sent_at,
+            'executed_at' => $command->executed_at,
+            'failed_at' => $command->failed_at,
+            'created_at' => $command->created_at,
+            'time_since_sent' => $command->sent_at ? now()->diffInSeconds($command->sent_at) : null,
+        ]);
+    }
+
+    /**
+     * Get all pending commands for a device
+     */
+    public function getPendingCommands($deviceSerial)
+    {
+        $commands = BiometricCommand::where('device_serial_number', $deviceSerial)
+            ->where('status', 'pending')
+            ->get();
+
+        return response()->json([
+            'device_serial' => $deviceSerial,
+            'pending_count' => $commands->count(),
+            'commands' => $commands->map(function ($command) {
+                return [
+                    'command_id' => $command->command_id,
+                    'type' => $command->type,
+                    'employee_id' => $command->employee_id,
+                    'created_at' => $command->created_at,
+                ];
+            }),
+        ]);
+    }
+
+    /**
+     * Get recent commands for a device with their status
+     */
+    public function getDeviceCommandHistory($deviceSerial, $limit = 10)
+    {
+        $commands = BiometricCommand::where('device_serial_number', $deviceSerial)
+            ->orderBy('created_at', 'desc')
+            ->limit($limit)
+            ->get();
+
+        return response()->json([
+            'device_serial' => $deviceSerial,
+            'total_commands' => $commands->count(),
+            'commands' => $commands->map(function ($command) {
+                return [
+                    'command_id' => $command->command_id,
+                    'type' => $command->type,
+                    'status' => $command->status,
+                    'employee_id' => $command->employee_id,
+                    'created_at' => $command->created_at,
+                    'sent_at' => $command->sent_at,
+                    'executed_at' => $command->executed_at,
+                    'failed_at' => $command->failed_at,
+                ];
+            }),
+        ]);
     }
 }
