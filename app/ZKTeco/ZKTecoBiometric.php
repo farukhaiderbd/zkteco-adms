@@ -2,6 +2,7 @@
 
 namespace AhidTechnologies\ZKTecoBiometric;
 
+use App\Services\ZKTecoCommandService;
 use App\ZKTeco\Models\BiometricAttendance;
 use App\ZKTeco\Models\BiometricCommand;
 use App\ZKTeco\Models\BiometricDevice;
@@ -11,6 +12,8 @@ use App\ZKTeco\Traits\HasLogging;
 class ZKTecoBiometric
 {
     use HasLogging;
+
+    protected ZKTecoCommandService $commandService;
 
     /**
      * Create a new biometric device.
@@ -86,17 +89,50 @@ class ZKTecoBiometric
      */
     public function createUserCommand(string $deviceSerial, string $pin, string $name, ?int $userId = null): BiometricCommand
     {
-        $commandId = 'CREATEUSER-'.uniqid();
-        $command = BiometricCommand::createUserCommand($commandId, $pin, $name);
-
         $this->logInfo('Creating user command for device', [
             'device_serial' => $deviceSerial,
-            'command_id' => $commandId,
             'pin' => $pin,
             'name' => $name,
         ]);
 
-        return $this->sendCommand($deviceSerial, $commandId, $command, $pin, $userId);
+        // Use the new service that integrates with Filament package
+        try {
+            $this->commandService = app(ZKTecoCommandService::class);
+            $zktecoCommand = $this->commandService->createUserCommand($deviceSerial, [
+                'pin' => $pin,
+                'name' => $name,
+                'card' => '',
+                'privilege' => 0,
+            ]);
+
+            $this->logInfo('User command created via ZKTeco package', [
+                'device_serial' => $deviceSerial,
+                'pin' => $pin,
+                'zkteco_command_id' => $zktecoCommand->id,
+            ]);
+
+            // Return a compatible response for backward compatibility
+            return BiometricCommand::create([
+                'type' => 'CREATEUSER',
+                'device_serial_number' => $deviceSerial,
+                'command_id' => $zktecoCommand->id,
+                'command' => $zktecoCommand->command_content,
+                'employee_id' => $pin,
+                'user_id' => $userId,
+                'status' => 'pending',
+            ]);
+        } catch (\Exception $e) {
+            $this->logError('Failed to create user command via ZKTeco package', [
+                'device_serial' => $deviceSerial,
+                'error' => $e->getMessage(),
+            ]);
+
+            // Fallback to original method if package fails
+            $commandId = 'CREATEUSER-'.uniqid();
+            $command = BiometricCommand::createUserCommand($commandId, $pin, $name);
+
+            return $this->sendCommand($deviceSerial, $commandId, $command, $pin, $userId);
+        }
     }
 
     /**
@@ -157,52 +193,91 @@ class ZKTecoBiometric
      */
     public function syncTime($deviceSerial = null): array
     {
-        $currentTime = now()->format('Y-m-d H:i:s');
         $results = [];
 
-        if ($deviceSerial) {
-            $devices = BiometricDevice::where('serial_number', $deviceSerial)->get();
-        } else {
-            $devices = BiometricDevice::all();
-        }
+        try {
+            $this->commandService = app(ZKTecoCommandService::class);
 
-        foreach ($devices as $device) {
-            try {
-                $commandId = 'SYNCTIME_'.$device->serial_number.'_'.now()->timestamp;
-                $command = sprintf('SET OPTIONS DateTime=%s', $currentTime);
+            if ($deviceSerial) {
+                $devices = BiometricDevice::where('serial_number', $deviceSerial)->get();
+            } else {
+                $devices = BiometricDevice::all();
+            }
 
-                BiometricCommand::create([
-                    'type' => 'SYNCTIME',
-                    'device_serial_number' => $device->serial_number,
-                    'command_id' => $commandId,
-                    'command' => $command,
-                    'employee_id' => null,
-                    'user_id' => null,
-                    'status' => 'pending',
-                ]);
+            foreach ($devices as $device) {
+                try {
+                    $zktecoCommand = $this->commandService->syncDeviceTime($device->serial_number);
 
-                $results[] = [
-                    'device' => $device->serial_number,
-                    'status' => 'success',
-                    'message' => 'Time sync command queued',
-                ];
+                    $results[] = [
+                        'device' => $device->serial_number,
+                        'status' => 'success',
+                        'message' => 'Time sync command queued via ZKTeco package',
+                        'command_id' => $zktecoCommand->id,
+                    ];
 
-                $this->logInfo('Manual time sync command queued', [
-                    'device_sn' => $device->serial_number,
-                    'command_id' => $commandId,
-                    'sync_time' => $currentTime,
-                ]);
-            } catch (\Exception $e) {
-                $results[] = [
-                    'device' => $device->serial_number,
-                    'status' => 'error',
-                    'message' => $e->getMessage(),
-                ];
+                    $this->logInfo('Time sync command queued via ZKTeco package', [
+                        'device_sn' => $device->serial_number,
+                        'zkteco_command_id' => $zktecoCommand->id,
+                    ]);
+                } catch (\Exception $e) {
+                    $results[] = [
+                        'device' => $device->serial_number,
+                        'status' => 'error',
+                        'message' => $e->getMessage(),
+                    ];
 
-                $this->logError('Failed to queue time sync command', [
-                    'device_sn' => $device->serial_number,
-                    'error' => $e->getMessage(),
-                ]);
+                    $this->logError('Failed to queue time sync via ZKTeco package', [
+                        'device_sn' => $device->serial_number,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+            }
+        } catch (\Exception $e) {
+            $this->logError('Failed to initialize ZKTeco command service', [
+                'error' => $e->getMessage(),
+            ]);
+
+            // Fallback to original method if service fails
+            $currentTime = now()->format('Y-m-d H:i:s');
+
+            if ($deviceSerial) {
+                $devices = BiometricDevice::where('serial_number', $deviceSerial)->get();
+            } else {
+                $devices = BiometricDevice::all();
+            }
+
+            foreach ($devices as $device) {
+                try {
+                    $commandId = 'SYNCTIME_'.$device->serial_number.'_'.now()->timestamp;
+                    $command = sprintf('SET OPTIONS DateTime=%s', $currentTime);
+
+                    BiometricCommand::create([
+                        'type' => 'SYNCTIME',
+                        'device_serial_number' => $device->serial_number,
+                        'command_id' => $commandId,
+                        'command' => $command,
+                        'employee_id' => null,
+                        'user_id' => null,
+                        'status' => 'pending',
+                    ]);
+
+                    $results[] = [
+                        'device' => $device->serial_number,
+                        'status' => 'success',
+                        'message' => 'Time sync command queued (fallback)',
+                    ];
+
+                    $this->logInfo('Time sync command queued (fallback)', [
+                        'device_sn' => $device->serial_number,
+                        'command_id' => $commandId,
+                    ]);
+                } catch (\Exception $ex) {
+                    $results[] = [
+                        'device' => $device->serial_number,
+                        'status' => 'error',
+                        'message' => $ex->getMessage(),
+                    ];
+                }
             }
         }
 
