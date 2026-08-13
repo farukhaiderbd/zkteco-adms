@@ -21,6 +21,7 @@ Route::prefix('zkteco')->group(function () {
     Route::get('/device/{deviceSerial}/history', [ZKTecoController::class, 'getDeviceCommandHistory'])->name('zkteco.device.history');
 });
 
+
 // ZKTeco Device Communication Endpoints (as per package specification)
 Route::prefix('iclock')->group(function () {
     Route::get('/cdata', [ZKTecoController::class, 'deviceHandshake']);
