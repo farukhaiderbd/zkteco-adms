@@ -146,7 +146,7 @@ class ZKTecoDeviceLogger
                 'message' => $message,
                 'log_data' => json_encode($data),
                 'created_at' => Carbon::now(),
-                'updated_at' => Carbon::now(),
+                'updated_at' => null,
             ]);
         } catch (\Exception $e) {
             // Fallback to file log if database fails
