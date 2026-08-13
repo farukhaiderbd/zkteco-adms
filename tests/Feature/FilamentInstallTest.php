@@ -24,17 +24,12 @@ class FilamentInstallTest extends TestCase
         $response->assertStatus(200);
     }
 
-    public function test_admin_user_exists(): void
+    public function test_authenticated_user_can_access_admin_panel(): void
     {
-        User::create([
-            'name' => 'Admin User',
-            'email' => 'admin@example.com',
-            'password' => 'password',
-        ]);
+        $user = User::factory()->create();
 
-        $admin = User::where('email', 'admin@example.com')->first();
+        $response = $this->actingAs($user)->get('/admin');
 
-        $this->assertNotNull($admin);
-        $this->assertEquals('Admin User', $admin->name);
+        $response->assertStatus(200);
     }
 }
