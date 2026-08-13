@@ -2,15 +2,12 @@
 
 namespace App\Console\Commands;
 
-use Illuminate\Console\Attributes\Description;
-use Illuminate\Console\Attributes\Signature;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Http;
 
-#[Signature('zkteco:test-connection')]
-#[Description('Test ZKTeco server connectivity and configuration')]
 class TestZKTecoConnection extends Command
 {
+    protected $signature = 'zkteco:test-connection';
     protected $description = 'Test ZKTeco server connectivity and configuration';
 
     public function handle(): int
@@ -73,7 +70,7 @@ class TestZKTecoConnection extends Command
         $this->info('📋 Device Configuration:');
         $this->line('   Server Address: ' . parse_url($serverUrl, PHP_URL_HOST));
         $this->line('   Protocol: ' . (parse_url($serverUrl, PHP_URL_SCHEME) === 'https' ? 'HTTPS' : 'HTTP'));
-        $this->line('   Port: ' . (parse_url($serverUrl, PHP_URL_PORT) ?: (parse_url($serverUrl, PHP_URL_SCHEME) === 'https' ? 443 : 80));
+        $this->line('   Port: ' . (parse_url($serverUrl, PHP_URL_PORT) ?: ((parse_url($serverUrl, PHP_URL_SCHEME) === 'https') ? 443 : 80)));
         $this->line('   Path: /iclock/getrequest');
         $this->line('   Method: GET');
         $this->line('   Polling Interval: 30 seconds');
